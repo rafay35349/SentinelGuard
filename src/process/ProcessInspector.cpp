@@ -35,7 +35,10 @@ constexpr std::array<std::wstring_view, 7> kProtectedNames{{
         pos == std::wstring_view::npos ? path : path.substr(pos + 1));
 }
 
-[[nodiscard]] bool isProtectedName(std::wstring_view name)
+} // anonymous namespace
+
+// ── isProtectedProcessName ───────────────────────────────────────────────────
+bool isProtectedProcessName(std::wstring_view name)
 {
     std::wstring lower(name);
     std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -45,8 +48,6 @@ constexpr std::array<std::wstring_view, 7> kProtectedNames{{
     }
     return false;
 }
-
-} // anonymous namespace
 
 // ── inspectPid ───────────────────────────────────────────────────────────────
 sentinel::core::Result<ProcessInfo> inspectPid(uint32_t pid)
@@ -85,7 +86,7 @@ sentinel::core::Result<ProcessInfo> inspectPid(uint32_t pid)
     info.pid         = pid;
     info.fullPath    = std::wstring(pathBuf, pathLen);
     info.name        = extractBaseName(info.fullPath);
-    info.isProtected = isProtectedName(info.name);
+    info.isProtected = isProtectedProcessName(info.name);
     return sentinel::core::Result<ProcessInfo>::ok(std::move(info));
 }
 
@@ -117,7 +118,7 @@ sentinel::core::Result<std::vector<ProcessInfo>> enumerateProcesses()
         ProcessInfo info{};
         info.pid         = static_cast<uint32_t>(entry.th32ProcessID);
         info.name        = entry.szExeFile;
-        info.isProtected = isProtectedName(info.name)
+        info.isProtected = isProtectedProcessName(info.name)
                         || info.pid == kIdlePid
                         || info.pid == kSystemPid;
         result.push_back(std::move(info));

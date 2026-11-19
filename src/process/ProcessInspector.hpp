@@ -30,6 +30,10 @@ struct ProcessInfo {
 [[nodiscard]] sentinel::core::Result<ProcessInfo>
     inspectPid(uint32_t pid);
 
+// Returns true if the executable name matches a critical system process (case-insensitive).
+[[nodiscard]] bool
+    isProtectedProcessName(std::wstring_view name);
+
 // Lightweight snapshot of all running processes (Toolhelp32).
 // Records contain name + pid only; fullPath is empty.
 // Returns list on success, or a UTF-8 error string on failure.
