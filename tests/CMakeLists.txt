@@ -16,3 +16,21 @@ if(MSVC)
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
     )
 endif()
+
+add_executable(VerifyMilestone3
+    VerifyMilestone3.cpp
+    ../src/monitors/PayloadClassifier.cpp
+)
+
+target_include_directories(VerifyMilestone3 PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+if(MSVC)
+    target_compile_options(VerifyMilestone3 PRIVATE
+        /W4 /WX /permissive- /utf-8 /Zc:__cplusplus
+    )
+    target_compile_definitions(VerifyMilestone3 PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+endif()
