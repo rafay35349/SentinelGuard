@@ -46,6 +46,8 @@ target_include_directories(imgui_lib PUBLIC
 add_executable(SentinelGuard
     src/main.cpp
     src/core/EventBus.cpp
+    src/process/ProcessInspector.cpp
+    src/process/ProcessKiller.cpp
     src/ui/Dashboard.cpp
 )
 
@@ -69,6 +71,9 @@ target_link_libraries(SentinelGuard PRIVATE
 if(MSVC)
     target_compile_options(SentinelGuard PRIVATE
         /W4 /WX /permissive- /utf-8 /Zc:__cplusplus
+    )
+    target_compile_definitions(SentinelGuard PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
     )
     target_compile_options(imgui_lib PRIVATE /W0)  # suppress warnings in third-party code
 else()

@@ -2,42 +2,54 @@
 #include <imgui.h>
 #include <chrono>
 #include <array>
-#include <cstdio>   // std::snprintf
-#include <windows.h> // WideCharToMultiByte, OutputDebugStringW
+#include <cstdio>
+#include <ctime>
 
 namespace sentinel::ui {
 
 // ─── constants ────────────────────────────────────────────────────────────────
 namespace {
-    constexpr float  kSidebarWidth    = 220.0f;
+    constexpr float  kSidebarWidth    = 260.0f;
     constexpr float  kStatusBarHeight = 24.0f;
-    constexpr int    kMockEventCount  = 5;
     constexpr ImU32  kColorWarning    = IM_COL32(255, 204,   0, 60);
     constexpr ImU32  kColorCritical   = IM_COL32(255,  51,  51, 80);
     constexpr ImU32  kColorInfo       = IM_COL32(255, 255, 255,  0);
 
-    // Convert a wide string to UTF-8 for ImGui display.
+    // Pure C++ wide-to-UTF8 converter with zero Win32 headers.
     [[nodiscard]] std::string wideToUtf8(std::wstring_view wstr)
     {
-        if (wstr.empty()) return {};
-        const int needed = ::WideCharToMultiByte(
-            CP_UTF8, 0,
-            wstr.data(), static_cast<int>(wstr.size()),
-            nullptr, 0, nullptr, nullptr);
-        if (needed <= 0) return {};
-        std::string result(static_cast<std::size_t>(needed), '\0');
-        ::WideCharToMultiByte(
-            CP_UTF8, 0,
-            wstr.data(), static_cast<int>(wstr.size()),
-            result.data(), needed, nullptr, nullptr);
-        return result;
+        std::string out;
+        out.reserve(wstr.size());
+        for (const wchar_t wc : wstr) {
+            if (wc < 0x80) {
+                out.push_back(static_cast<char>(wc));
+            } else if (wc < 0x800) {
+                out.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
+                out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+            } else {
+                out.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
+                out.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
+                out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+            }
+        }
+        return out;
     }
 } // anonymous namespace
 
-// ─── ctor ─────────────────────────────────────────────────────────────────────
+// ─── ctor & setters ───────────────────────────────────────────────────────────
 Dashboard::Dashboard(std::function<std::vector<sentinel::core::AlertEvent>()> snapshotFn)
     : snapshotFn_(std::move(snapshotFn))
 {}
+
+void Dashboard::setInspectCallback(InspectCallback cb)
+{
+    inspectCb_ = std::move(cb);
+}
+
+void Dashboard::setKillCallback(KillCallback cb)
+{
+    killCb_ = std::move(cb);
+}
 
 void Dashboard::setMockMode(bool enabled)
 {
@@ -47,10 +59,7 @@ void Dashboard::setMockMode(bool enabled)
 // ─── render ───────────────────────────────────────────────────────────────────
 void Dashboard::render()
 {
-    // Full-screen dockspace / host window
     ImGuiIO& io = ImGui::GetIO();
-
-    // Position the host window to cover the entire display
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize,    ImGuiCond_Always);
 
@@ -66,17 +75,10 @@ void Dashboard::render()
         ImGuiWindowFlags_NoBackground;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("SentinelGuard \xe2\x80\x93 Dashboard", nullptr, kHostFlags);
+    ImGui::Begin("SentinelGuard \xe2\x80\x93 HostWindow", nullptr, kHostFlags);
     ImGui::PopStyleVar();
 
-    // Optional dockspace (available in ImGui docking branch)
-#ifdef IMGUI_HAS_DOCK
-    ImGui::DockSpaceOverViewport(ImGui::GetMainViewport());
-#endif
-
-    // Gather events — inject mock data once when mockMode_ is active
     std::vector<sentinel::core::AlertEvent> events;
-
     if (mockMode_) {
         static bool s_mockCreated = false;
         static std::vector<sentinel::core::AlertEvent> s_mockEvents;
@@ -84,7 +86,6 @@ void Dashboard::render()
         if (!s_mockCreated) {
             s_mockCreated = true;
             namespace sc = sentinel::core;
-
             s_mockEvents = {
                 sc::AlertEvent::make(sc::AlertCategory::Process,   sc::Severity::Info,     L"explorer.exe",  L"Process started"),
                 sc::AlertEvent::make(sc::AlertCategory::Clipboard, sc::Severity::Warning,  L"ClipboardMgr",  L"Sensitive text copied"),
@@ -101,10 +102,8 @@ void Dashboard::render()
     renderSidebar();
     ImGui::SameLine();
 
-    // Right-hand panel: table + status bar
     ImGui::BeginGroup();
     {
-        // Reserve space for status bar at the bottom
         const float tableHeight = ImGui::GetContentRegionAvail().y - kStatusBarHeight;
         ImGui::BeginChild("##EventPanel", ImVec2(0.0f, tableHeight), false, ImGuiWindowFlags_NoScrollbar);
         renderEventTable(events);
@@ -128,7 +127,7 @@ void Dashboard::renderSidebar()
     ImGui::Spacing();
 
     ImGui::TextUnformatted("Active Monitors:");
-    ImGui::Bullet(); ImGui::TextUnformatted("Process Monitor \xe2\x9c\x93");   // ✓
+    ImGui::Bullet(); ImGui::TextUnformatted("Process Monitor \xe2\x9c\x93");
     ImGui::Bullet(); ImGui::TextUnformatted("Clipboard Monitor \xe2\x9c\x93");
     ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor \xe2\x9c\x93");
 
@@ -136,18 +135,70 @@ void Dashboard::renderSidebar()
     ImGui::Separator();
     ImGui::Spacing();
 
-    if (ImGui::Button("Clear Events", ImVec2(-1.0f, 0.0f))) {
-        OutputDebugStringW(L"[Dashboard] Clear Events requested (stub)\n");
-    }
+    renderProcessSection();
 
     ImGui::EndChild();
+}
+
+// ─── renderProcessSection ─────────────────────────────────────────────────────
+void Dashboard::renderProcessSection()
+{
+    ImGui::TextUnformatted("Process Control");
+    ImGui::Spacing();
+
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("PID", &targetPid_);
+    if (targetPid_ < 0) {
+        targetPid_ = 0;
+    }
+
+    if (ImGui::Button("Inspect") && inspectCb_) {
+        lastKillResult_.reset();
+        lastLookup_ = inspectCb_(static_cast<uint32_t>(targetPid_));
+    }
+
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.7f, 0.1f, 0.1f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.85f, 0.2f, 0.2f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.5f, 0.05f, 0.05f, 1.0f));
+    if (ImGui::Button("Kill Process") && killCb_) {
+        lastKillResult_ = killCb_(static_cast<uint32_t>(targetPid_));
+    }
+    ImGui::PopStyleColor(3);
+
+    if (lastLookup_.has_value()) {
+        ImGui::Spacing();
+        const auto& r = *lastLookup_;
+        if (r.success) {
+            ImGui::Text("Name: %s", r.name.c_str());
+            if (r.isProtected) {
+                ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "Status: PROTECTED SYSTEM");
+            } else {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Status: Terminating Allowed");
+            }
+            if (!r.fullPath.empty()) {
+                ImGui::TextWrapped("Path: %s", r.fullPath.c_str());
+            }
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "%s", r.message.c_str());
+        }
+    }
+
+    if (lastKillResult_.has_value()) {
+        ImGui::Spacing();
+        const auto& kr = *lastKillResult_;
+        if (kr.success) {
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "%s", kr.message.c_str());
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "%s", kr.message.c_str());
+        }
+    }
 }
 
 // ─── renderEventTable ─────────────────────────────────────────────────────────
 void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& events)
 {
     constexpr int kColumnCount = 5;
-
     constexpr ImGuiTableFlags kTableFlags =
         ImGuiTableFlags_Resizable      |
         ImGuiTableFlags_Sortable       |
@@ -160,7 +211,7 @@ void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& 
         return;
     }
 
-    ImGui::TableSetupScrollFreeze(0, 1); // keep header visible
+    ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time",     ImGuiTableColumnFlags_WidthFixed,   72.0f);
     ImGui::TableSetupColumn("Category", ImGuiTableColumnFlags_WidthFixed,   80.0f);
     ImGui::TableSetupColumn("Severity", ImGuiTableColumnFlags_WidthFixed,   72.0f);
@@ -168,14 +219,11 @@ void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& 
     ImGui::TableSetupColumn("Detail",   ImGuiTableColumnFlags_WidthStretch,  0.7f);
     ImGui::TableHeadersRow();
 
-    // Iterate in reverse order — newest first
     if (!events.empty()) {
         for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(events.size()) - 1; i >= 0; --i) {
             const sentinel::core::AlertEvent& ev = events[static_cast<std::size_t>(i)];
-
             ImGui::TableNextRow();
 
-            // Row background tint by severity
             const ImU32 rowColor = [&]() -> ImU32 {
                 switch (ev.severity) {
                     case sentinel::core::Severity::Warning:  return kColorWarning;
@@ -187,7 +235,6 @@ void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& 
                 ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, rowColor);
             }
 
-            // Time column — format as HH:MM:SS
             ImGui::TableSetColumnIndex(0);
             {
                 const std::time_t tt = std::chrono::system_clock::to_time_t(ev.timestamp);
@@ -197,25 +244,21 @@ void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& 
 #else
                 localtime_r(&tt, &tm);
 #endif
-                char timeBuf[9]; // "HH:MM:SS\0"
+                char timeBuf[9]{};
                 std::snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d",
                               tm.tm_hour, tm.tm_min, tm.tm_sec);
                 ImGui::TextUnformatted(timeBuf);
             }
 
-            // Category
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(categoryLabel(ev.category));
 
-            // Severity (colored text)
             ImGui::TableSetColumnIndex(2);
             ImGui::TextColored(severityColor(ev.severity), "%s", severityLabel(ev.severity));
 
-            // Source (wstring → UTF-8 for ImGui)
             ImGui::TableSetColumnIndex(3);
             ImGui::TextUnformatted(wideToUtf8(ev.source).c_str());
 
-            // Detail (wstring → UTF-8 for ImGui)
             ImGui::TableSetColumnIndex(4);
             ImGui::TextUnformatted(wideToUtf8(ev.detail).c_str());
         }
@@ -256,9 +299,9 @@ const char* Dashboard::severityLabel(sentinel::core::Severity sev)
 ImVec4 Dashboard::severityColor(sentinel::core::Severity sev)
 {
     switch (sev) {
-        case sentinel::core::Severity::Warning:  return ImVec4(1.0f, 0.8f, 0.0f, 1.0f); // yellow
-        case sentinel::core::Severity::Critical: return ImVec4(1.0f, 0.2f, 0.2f, 1.0f); // red
-        default:                                 return ImVec4(1.0f, 1.0f, 1.0f, 1.0f); // white
+        case sentinel::core::Severity::Warning:  return ImVec4(1.0f, 0.8f, 0.0f, 1.0f);
+        case sentinel::core::Severity::Critical: return ImVec4(1.0f, 0.2f, 0.2f, 1.0f);
+        default:                                 return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 

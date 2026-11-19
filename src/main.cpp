@@ -15,9 +15,15 @@
 
 // ── Local headers ────────────────────────────────────────────────────────────
 #include "core/Win32Handle.hpp"
+#include "core/Win32Utils.hpp"
 #include "core/AlertEvent.hpp"
 #include "core/EventBus.hpp"
+#include "process/ProcessInspector.hpp"
+#include "process/ProcessKiller.hpp"
 #include "ui/Dashboard.hpp"
+
+// Forward declaration required by ImGui Win32 backend implementation
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // ── WRL alias ────────────────────────────────────────────────────────────────
 namespace wrl = Microsoft::WRL;
@@ -163,7 +169,7 @@ int WINAPI WinMain(
     wc.style         = CS_CLASSDC;
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInstance;
-    wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hCursor       = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
     wc.lpszClassName = L"SentinelGuardWnd";
     RegisterClassExW(&wc);
 
@@ -240,6 +246,41 @@ int WINAPI WinMain(
         {
             return state.ringBuffer.snapshot();
         });
+
+    dashboard.setInspectCallback([](uint32_t pid) -> sentinel::ui::ProcessLookupResult {
+        const auto res = sentinel::process::inspectPid(pid);
+        if (res.isOk()) {
+            const auto& info = res.value();
+            return {
+                true,
+                info.isProtected,
+                sentinel::core::wideToUtf8(info.name),
+                sentinel::core::wideToUtf8(info.fullPath),
+                "OK"
+            };
+        }
+        return { false, false, "", "", res.error() };
+    });
+
+    dashboard.setKillCallback([&bus](uint32_t pid) -> sentinel::ui::ProcessKillUiResult {
+        const auto res = sentinel::process::terminateProcess(pid);
+        if (res.isOk()) {
+            bus.publish(sentinel::core::AlertEvent::make(
+                sentinel::core::AlertCategory::Process,
+                sentinel::core::Severity::Warning,
+                L"ProcessKiller",
+                L"Terminated PID " + std::to_wstring(pid)));
+            return { true, "Successfully terminated PID " + std::to_string(pid) };
+        }
+
+        const std::wstring errWide = sentinel::core::utf8ToWide(res.error());
+        bus.publish(sentinel::core::AlertEvent::make(
+            sentinel::core::AlertCategory::Process,
+            sentinel::core::Severity::Critical,
+            L"ProcessKiller",
+            L"Refused/Failed PID " + std::to_wstring(pid) + L": " + errWide));
+        return { false, res.error() };
+    });
 
     state.pDashboard = &dashboard;
 
