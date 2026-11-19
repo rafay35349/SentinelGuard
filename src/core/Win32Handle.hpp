@@ -104,4 +104,52 @@ private:
     HKEY key_;
 };
 
+// ---------------------------------------------------------------------------
+// UniqueHwnd – move-only RAII wrapper for HWND
+// ---------------------------------------------------------------------------
+class UniqueHwnd {
+public:
+    explicit UniqueHwnd(HWND hwnd = nullptr) noexcept
+        : hwnd_(hwnd) {}
+
+    ~UniqueHwnd() noexcept {
+        if (valid()) {
+            ::DestroyWindow(hwnd_);
+        }
+    }
+
+    // Move
+    UniqueHwnd(UniqueHwnd&& other) noexcept
+        : hwnd_(other.release()) {}
+
+    UniqueHwnd& operator=(UniqueHwnd&& other) noexcept {
+        if (this != &other) {
+            if (valid()) {
+                ::DestroyWindow(hwnd_);
+            }
+            hwnd_ = other.release();
+        }
+        return *this;
+    }
+
+    // No copy
+    UniqueHwnd(const UniqueHwnd&)            = delete;
+    UniqueHwnd& operator=(const UniqueHwnd&) = delete;
+
+    [[nodiscard]] HWND get() const noexcept { return hwnd_; }
+
+    HWND release() noexcept {
+        HWND h = hwnd_;
+        hwnd_  = nullptr;
+        return h;
+    }
+
+    [[nodiscard]] bool valid() const noexcept { return hwnd_ != nullptr; }
+
+    explicit operator bool() const noexcept { return valid(); }
+
+private:
+    HWND hwnd_;
+};
+
 } // namespace sentinel::core
