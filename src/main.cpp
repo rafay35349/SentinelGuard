@@ -18,7 +18,9 @@
 #include "core/Win32Utils.hpp"
 #include "core/AlertEvent.hpp"
 #include "core/EventBus.hpp"
+#include "core/Allowlist.hpp"
 #include "monitors/ClipboardMonitor.hpp"
+#include "monitors/DeviceMonitor.hpp"
 #include "process/ProcessInspector.hpp"
 #include "process/ProcessKiller.hpp"
 #include "ui/Dashboard.hpp"
@@ -231,19 +233,25 @@ int WINAPI WinMain(
     ShowWindow(state.hwnd, SW_SHOWDEFAULT);
     UpdateWindow(state.hwnd);
 
-    // ── EventBus + RingBuffer wiring ──────────────────────────────────────────
+    // ── EventBus + RingBuffer + Allowlist wiring ─────────────────────────────
+    sentinel::core::Allowlist allowlist("sentinel_allowlist.txt");
     sentinel::core::EventBus bus;
 
-    bus.subscribe([&state](const sentinel::core::AlertEvent& evt)
+    bus.subscribe([&state, &allowlist](const sentinel::core::AlertEvent& evt)
     {
-        state.ringBuffer.push(evt);
+        if (!allowlist.isAllowed(evt.source, evt.category)) {
+            state.ringBuffer.push(evt);
+        }
     });
 
     bus.start();
 
-    // ── Clipboard Monitor ─────────────────────────────────────────────────────
+    // ── Background Monitors ───────────────────────────────────────────────────
     sentinel::monitors::ClipboardMonitor clipboardMonitor(bus);
     clipboardMonitor.start();
+
+    sentinel::monitors::DeviceMonitor deviceMonitor(bus);
+    deviceMonitor.start();
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
     sentinel::ui::Dashboard dashboard(
@@ -253,6 +261,40 @@ int WINAPI WinMain(
         });
 
     dashboard.setMockMode(false); // Live monitoring enabled by default
+
+    dashboard.setAllowlistCallbacks(
+        [&allowlist]() -> std::vector<sentinel::ui::AllowlistUiEntry> {
+            const auto entries = allowlist.getEntries();
+            std::vector<sentinel::ui::AllowlistUiEntry> uiEntries;
+            uiEntries.reserve(entries.size());
+            for (const auto& e : entries) {
+                uiEntries.push_back({
+                    sentinel::core::wideToUtf8(e.processName),
+                    e.allowAll,
+                    e.allowProcess,
+                    e.allowClipboard,
+                    e.allowDevice,
+                    e.allowNetwork,
+                    sentinel::core::wideToUtf8(e.note)
+                });
+            }
+            return uiEntries;
+        },
+        [&allowlist](sentinel::ui::AllowlistUiEntry entry) {
+            allowlist.addOrUpdate({
+                sentinel::core::utf8ToWide(entry.processName),
+                entry.allowAll,
+                entry.allowProcess,
+                entry.allowClipboard,
+                entry.allowDevice,
+                entry.allowNetwork,
+                sentinel::core::utf8ToWide(entry.note)
+            });
+        },
+        [&allowlist](std::string_view name) -> bool {
+            return allowlist.remove(sentinel::core::utf8ToWide(name));
+        }
+    );
 
     dashboard.setInspectCallback([](uint32_t pid) -> sentinel::ui::ProcessLookupResult {
         const auto res = sentinel::process::inspectPid(pid);
@@ -343,6 +385,7 @@ int WINAPI WinMain(
     }
 
     // ── Shutdown ──────────────────────────────────────────────────────────────
+    deviceMonitor.stop();
     clipboardMonitor.stop();
     bus.stop();
 

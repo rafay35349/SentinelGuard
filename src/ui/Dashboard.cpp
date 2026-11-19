@@ -9,7 +9,7 @@ namespace sentinel::ui {
 
 // ─── constants ────────────────────────────────────────────────────────────────
 namespace {
-    constexpr float  kSidebarWidth    = 260.0f;
+    constexpr float  kSidebarWidth    = 280.0f;
     constexpr float  kStatusBarHeight = 24.0f;
     constexpr ImU32  kColorWarning    = IM_COL32(255, 204,   0, 60);
     constexpr ImU32  kColorCritical   = IM_COL32(255,  51,  51, 80);
@@ -49,6 +49,15 @@ void Dashboard::setInspectCallback(InspectCallback cb)
 void Dashboard::setKillCallback(KillCallback cb)
 {
     killCb_ = std::move(cb);
+}
+
+void Dashboard::setAllowlistCallbacks(GetAllowlistCallback getCb,
+                                      AddAllowlistCallback addCb,
+                                      RemoveAllowlistCallback remCb)
+{
+    getAllowlistCb_    = std::move(getCb);
+    addAllowlistCb_    = std::move(addCb);
+    removeAllowlistCb_ = std::move(remCb);
 }
 
 void Dashboard::setMockMode(bool enabled)
@@ -129,7 +138,7 @@ void Dashboard::renderSidebar()
     ImGui::TextUnformatted("Active Monitors:");
     ImGui::Bullet(); ImGui::TextUnformatted("Process Monitor \xe2\x9c\x93");
     ImGui::Bullet(); ImGui::TextUnformatted("Clipboard Monitor \xe2\x9c\x93 (Live)");
-    ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor (Milestone 4)");
+    ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor \xe2\x9c\x93 (Live)");
 
     ImGui::Spacing();
     ImGui::Checkbox("Show Mock Events", &mockMode_);
@@ -139,6 +148,12 @@ void Dashboard::renderSidebar()
     ImGui::Spacing();
 
     renderProcessSection();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    renderAllowlistSection();
 
     ImGui::EndChild();
 }
@@ -194,6 +209,63 @@ void Dashboard::renderProcessSection()
             ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "%s", kr.message.c_str());
         } else {
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "%s", kr.message.c_str());
+        }
+    }
+}
+
+// ─── renderAllowlistSection ───────────────────────────────────────────────────
+void Dashboard::renderAllowlistSection()
+{
+    ImGui::TextUnformatted("Trusted Allowlist Policy");
+    ImGui::Spacing();
+
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::InputTextWithHint("##AllowName", "e.g. zoom.exe", newAllowName_, sizeof(newAllowName_));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::InputTextWithHint("##AllowNote", "Note", newAllowNote_, sizeof(newAllowNote_));
+
+    ImGui::Checkbox("Device", &newAllowDevice_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Process", &newAllowProcess_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Clip", &newAllowClipboard_);
+
+    if (ImGui::Button("Add to Allowlist") && addAllowlistCb_) {
+        if (newAllowName_[0] != '\0') {
+            AllowlistUiEntry entry{};
+            entry.processName    = newAllowName_;
+            entry.note           = newAllowNote_;
+            entry.allowAll       = false;
+            entry.allowDevice    = newAllowDevice_;
+            entry.allowProcess   = newAllowProcess_;
+            entry.allowClipboard = newAllowClipboard_;
+            entry.allowNetwork   = false;
+            addAllowlistCb_(entry);
+            newAllowName_[0] = '\0';
+            newAllowNote_[0] = '\0';
+        }
+    }
+
+    if (getAllowlistCb_) {
+        const auto entries = getAllowlistCb_();
+        if (!entries.empty()) {
+            ImGui::Spacing();
+            ImGui::BeginChild("##AllowListEntries", ImVec2(0.0f, 110.0f), true);
+            for (const auto& e : entries) {
+                ImGui::PushID(e.processName.c_str());
+                if (ImGui::SmallButton("X") && removeAllowlistCb_) {
+                    removeAllowlistCb_(e.processName);
+                }
+                ImGui::SameLine();
+                ImGui::Text("%s", e.processName.c_str());
+                if (!e.note.empty()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%s)", e.note.c_str());
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
         }
     }
 }

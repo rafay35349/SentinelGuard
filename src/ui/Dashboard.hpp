@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <functional>
 #include <optional>
 #include <cstdint>
@@ -11,7 +12,7 @@
 namespace sentinel::ui {
 
 // ---------------------------------------------------------------------------
-// Plain data structs for Process UI - no Win32 headers required.
+// Plain data structs for Process and Allowlist UI - zero Win32 headers required.
 // ---------------------------------------------------------------------------
 struct ProcessLookupResult {
     bool        success{ false };
@@ -26,8 +27,21 @@ struct ProcessKillUiResult {
     std::string message;
 };
 
-using InspectCallback = std::function<ProcessLookupResult(uint32_t pid)>;
-using KillCallback    = std::function<ProcessKillUiResult(uint32_t pid)>;
+struct AllowlistUiEntry {
+    std::string processName;
+    bool        allowAll{ false };
+    bool        allowProcess{ true };
+    bool        allowClipboard{ false };
+    bool        allowDevice{ true };
+    bool        allowNetwork{ false };
+    std::string note;
+};
+
+using InspectCallback         = std::function<ProcessLookupResult(uint32_t pid)>;
+using KillCallback            = std::function<ProcessKillUiResult(uint32_t pid)>;
+using GetAllowlistCallback    = std::function<std::vector<AllowlistUiEntry>()>;
+using AddAllowlistCallback    = std::function<void(AllowlistUiEntry)>;
+using RemoveAllowlistCallback = std::function<bool(std::string_view)>;
 
 // ---------------------------------------------------------------------------
 // Dashboard – Dear ImGui view layer.
@@ -36,9 +50,14 @@ class Dashboard {
 public:
     explicit Dashboard(std::function<std::vector<sentinel::core::AlertEvent>()> snapshotFn);
 
-    // Callbacks for process operations (wired by main / application controller)
+    // Callbacks for process operations
     void setInspectCallback(InspectCallback cb);
     void setKillCallback(KillCallback cb);
+
+    // Callbacks for allowlist policy
+    void setAllowlistCallbacks(GetAllowlistCallback getCb,
+                               AddAllowlistCallback addCb,
+                               RemoveAllowlistCallback remCb);
 
     // Called each frame — renders the full ImGui UI
     void render();
@@ -48,18 +67,31 @@ public:
 
 private:
     std::function<std::vector<sentinel::core::AlertEvent>()> snapshotFn_;
-    InspectCallback inspectCb_;
-    KillCallback    killCb_;
-    bool            mockMode_{ true };
+    InspectCallback         inspectCb_;
+    KillCallback            killCb_;
+    GetAllowlistCallback    getAllowlistCb_;
+    AddAllowlistCallback    addAllowlistCb_;
+    RemoveAllowlistCallback removeAllowlistCb_;
+    bool                    mockMode_{ true };
 
     // Process UI State
     int targetPid_{ 0 };
     std::optional<ProcessLookupResult> lastLookup_;
     std::optional<ProcessKillUiResult> lastKillResult_;
 
+    // Allowlist UI State
+    char newAllowName_[128]{};
+    char newAllowNote_[128]{};
+    bool newAllowAll_{ false };
+    bool newAllowProcess_{ true };
+    bool newAllowClipboard_{ false };
+    bool newAllowDevice_{ true };
+    bool newAllowNetwork_{ false };
+
     // Helpers
     void renderSidebar();
     void renderProcessSection();
+    void renderAllowlistSection();
     void renderEventTable(const std::vector<sentinel::core::AlertEvent>& events);
     void renderStatusBar();
 
