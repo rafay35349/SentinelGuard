@@ -1,0 +1,32 @@
+# CMake build artifacts
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# MSVC
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.exe
+
+# FetchContent / third_party clones (re-fetched on configure)
+third_party/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Misc
+*.log
+Thumbs.db
