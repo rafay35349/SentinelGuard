@@ -128,8 +128,11 @@ void Dashboard::renderSidebar()
 
     ImGui::TextUnformatted("Active Monitors:");
     ImGui::Bullet(); ImGui::TextUnformatted("Process Monitor \xe2\x9c\x93");
-    ImGui::Bullet(); ImGui::TextUnformatted("Clipboard Monitor \xe2\x9c\x93");
-    ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor \xe2\x9c\x93");
+    ImGui::Bullet(); ImGui::TextUnformatted("Clipboard Monitor \xe2\x9c\x93 (Live)");
+    ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor (Milestone 4)");
+
+    ImGui::Spacing();
+    ImGui::Checkbox("Show Mock Events", &mockMode_);
 
     ImGui::Spacing();
     ImGui::Separator();

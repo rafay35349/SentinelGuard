@@ -18,6 +18,7 @@
 #include "core/Win32Utils.hpp"
 #include "core/AlertEvent.hpp"
 #include "core/EventBus.hpp"
+#include "monitors/ClipboardMonitor.hpp"
 #include "process/ProcessInspector.hpp"
 #include "process/ProcessKiller.hpp"
 #include "ui/Dashboard.hpp"
@@ -240,12 +241,18 @@ int WINAPI WinMain(
 
     bus.start();
 
+    // ── Clipboard Monitor ─────────────────────────────────────────────────────
+    sentinel::monitors::ClipboardMonitor clipboardMonitor(bus);
+    clipboardMonitor.start();
+
     // ── Dashboard ─────────────────────────────────────────────────────────────
     sentinel::ui::Dashboard dashboard(
         [&state]() -> std::vector<sentinel::core::AlertEvent>
         {
             return state.ringBuffer.snapshot();
         });
+
+    dashboard.setMockMode(false); // Live monitoring enabled by default
 
     dashboard.setInspectCallback([](uint32_t pid) -> sentinel::ui::ProcessLookupResult {
         const auto res = sentinel::process::inspectPid(pid);
@@ -336,6 +343,7 @@ int WINAPI WinMain(
     }
 
     // ── Shutdown ──────────────────────────────────────────────────────────────
+    clipboardMonitor.stop();
     bus.stop();
 
     ImGui_ImplDX11_Shutdown();

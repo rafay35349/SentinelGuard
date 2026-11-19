@@ -46,6 +46,8 @@ target_include_directories(imgui_lib PUBLIC
 add_executable(SentinelGuard
     src/main.cpp
     src/core/EventBus.cpp
+    src/monitors/PayloadClassifier.cpp
+    src/monitors/ClipboardMonitor.cpp
     src/process/ProcessInspector.cpp
     src/process/ProcessKiller.cpp
     src/ui/Dashboard.cpp
