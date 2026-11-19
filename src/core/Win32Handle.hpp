@@ -90,6 +90,14 @@ public:
 
     [[nodiscard]] HKEY get() const noexcept { return key_; }
 
+    [[nodiscard]] HKEY* put() noexcept {
+        if (valid()) {
+            ::RegCloseKey(key_);
+            key_ = nullptr;
+        }
+        return &key_;
+    }
+
     HKEY release() noexcept {
         HKEY k = key_;
         key_   = nullptr;
