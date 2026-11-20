@@ -251,10 +251,70 @@ These are local runtime files and are not required to be committed to the reposi
 - Process termination can cause data loss or interrupt applications. Protected-process checks do not make arbitrary process termination risk-free.
 - SentinelGuard is a learning and systems-programming project, not a replacement for Windows Security, antivirus software, EDR, or a firewall.
 
-## License
+## How SentinelGuard Works
 
-Add the project's chosen license here if one is included in the repository. If no license file exists, the project is currently not explicitly licensed for reuse.
+SentinelGuard uses a modular, event-driven architecture to monitor selected Windows activities and display them through a real-time desktop dashboard.
 
----
+Rather than relying on a single monitoring loop, the application separates system monitoring, event processing, and user interaction into independent components.
+
+### 1. System Monitoring
+
+SentinelGuard uses native Windows APIs to collect information from different areas of the operating system.
+
+Its monitoring components observe:
+
+- **Process Activity:** Retrieves information about running processes, including process names, process IDs, and executable paths.
+- **Clipboard Activity:** Inspects clipboard content and applies heuristic checks to identify potentially sensitive patterns, such as payment-card-like numbers, JWT-like tokens, and high-entropy strings.
+- **Webcam and Microphone Activity:** Checks Windows user consent information to identify applications associated with camera and microphone access.
+- **Network Activity:** Monitors IPv4 TCP connections and associates them with their owning processes where possible.
+
+### 2. Event Collection and Processing
+
+When a monitoring component detects relevant activity, it generates an event containing information about the observation.
+
+These events are passed through a thread-safe event pipeline. SentinelGuard uses C++20 concurrency features, including `std::jthread`, to manage background monitoring tasks.
+
+A bounded ring buffer stores recent events, allowing the application to maintain a limited event history without continuously increasing memory usage.
+
+### 3. Event Analysis and Trust Management
+
+Collected events are evaluated and presented with relevant context.
+
+SentinelGuard also includes an allowlist that allows users to identify trusted processes. This helps distinguish expected activity from processes that may deserve closer inspection.
+
+Clipboard detections rely on heuristic pattern analysis rather than claiming to definitively identify malicious content.
+
+### 4. Dashboard and User Interaction
+
+The graphical interface is built using Dear ImGui and DirectX 11.
+
+The dashboard presents collected activity in a readable format, allowing users to:
+
+- Review recent monitoring events.
+- Inspect process information.
+- Manage trusted processes through the allowlist.
+- Terminate selected processes where permitted.
+- Generate mock events to test and demonstrate the interface.
+
+### 5. Testing and Verification
+
+SentinelGuard includes standalone verification programs for its development milestones. These allow individual components to be tested independently of the main graphical application.
+
+This makes it easier to validate functionality and identify issues without relying entirely on manual interaction with the dashboard.
+
+### Overall Workflow
+
+1. Background monitoring components observe selected Windows activities.
+2. Relevant observations are converted into structured events.
+3. Events enter the thread-safe event pipeline.
+4. Recent events are stored in a bounded ring buffer.
+5. The dashboard retrieves and displays the available information.
+6. Users inspect activity and perform supported actions through the interface.
+
+### Design Philosophy
+
+SentinelGuard is designed as a lightweight, user-facing Windows activity and privacy monitor. Its primary focus is providing visibility into selected system activities and giving users greater control over their processes.
+
+It is not intended to replace antivirus software or a full Endpoint Detection and Response (EDR) solution. It does not rely on kernel-level monitoring and does not guarantee detection of all malicious activity.
 
 **Repository:** [github.com/rafay35349/SentinelGuard](https://github.com/rafay35349/SentinelGuard)
