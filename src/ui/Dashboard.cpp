@@ -1,5 +1,6 @@
 #include "Dashboard.hpp"
 #include <imgui.h>
+#include <algorithm>
 #include <chrono>
 #include <array>
 #include <cstdio>
@@ -10,26 +11,48 @@ namespace sentinel::ui {
 // ─── constants ────────────────────────────────────────────────────────────────
 namespace {
     constexpr float  kSidebarWidth    = 280.0f;
-    constexpr float  kStatusBarHeight = 24.0f;
+    constexpr float  kSidebarPadX     = 12.0f;
+    constexpr float  kStatusBarHeight = 28.0f;
     constexpr ImU32  kColorWarning    = IM_COL32(255, 204,   0, 60);
     constexpr ImU32  kColorCritical   = IM_COL32(255,  51,  51, 80);
     constexpr ImU32  kColorInfo       = IM_COL32(255, 255, 255,  0);
 
     // Pure C++ wide-to-UTF8 converter with zero Win32 headers.
+    // Handles UTF-16 surrogate pairs so non-BMP names (e.g. emoji) render
+    // correctly; lone surrogates degrade to U+FFFD.
     [[nodiscard]] std::string wideToUtf8(std::wstring_view wstr)
     {
         std::string out;
         out.reserve(wstr.size());
-        for (const wchar_t wc : wstr) {
-            if (wc < 0x80) {
-                out.push_back(static_cast<char>(wc));
-            } else if (wc < 0x800) {
-                out.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
-                out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+
+        for (std::size_t i = 0; i < wstr.size(); ++i) {
+            uint32_t cp = static_cast<uint32_t>(wstr[i]);
+
+            if (cp >= 0xD800u && cp <= 0xDBFFu && i + 1 < wstr.size()) {
+                const uint32_t low = static_cast<uint32_t>(wstr[i + 1]);
+                if (low >= 0xDC00u && low <= 0xDFFFu) {
+                    cp = 0x10000u + ((cp - 0xD800u) << 10) + (low - 0xDC00u);
+                    ++i;
+                }
+            }
+            if (cp >= 0xD800u && cp <= 0xDFFFu) {
+                cp = 0xFFFDu;
+            }
+
+            if (cp < 0x80u) {
+                out.push_back(static_cast<char>(cp));
+            } else if (cp < 0x800u) {
+                out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+            } else if (cp < 0x10000u) {
+                out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
             } else {
-                out.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
-                out.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
-                out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
+                out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+                out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
             }
         }
         return out;
@@ -63,6 +86,11 @@ void Dashboard::setAllowlistCallbacks(GetAllowlistCallback getCb,
 void Dashboard::setMockMode(bool enabled)
 {
     mockMode_ = enabled;
+}
+
+void Dashboard::setMonitorStates(MonitorStates states) noexcept
+{
+    monitorStates_ = states;
 }
 
 // ─── render ───────────────────────────────────────────────────────────────────
@@ -113,12 +141,14 @@ void Dashboard::render()
 
     ImGui::BeginGroup();
     {
-        const float tableHeight = ImGui::GetContentRegionAvail().y - kStatusBarHeight;
+        // Clamp: a very short window must not yield a negative child height.
+        const float tableHeight =
+            (std::max)(1.0f, ImGui::GetContentRegionAvail().y - kStatusBarHeight);
         ImGui::BeginChild("##EventPanel", ImVec2(0.0f, tableHeight), false, ImGuiWindowFlags_NoScrollbar);
         renderEventTable(events);
         ImGui::EndChild();
 
-        renderStatusBar();
+        renderStatusBar(events.size());
     }
     ImGui::EndGroup();
 
@@ -129,16 +159,36 @@ void Dashboard::render()
 void Dashboard::renderSidebar()
 {
     const float sidebarHeight = ImGui::GetContentRegionAvail().y;
-    ImGui::BeginChild("##Sidebar", ImVec2(kSidebarWidth, sidebarHeight), true);
 
-    ImGui::TextUnformatted("\xf0\x9f\x9b\xa1 SentinelGuard v0.1"); // 🛡 in UTF-8
+    // Extra left padding: a bordered child defaults to 8 px, which the rounded
+    // border visually eats into and leaves headings flush against the edge.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kSidebarPadX, 8.0f));
+    ImGui::BeginChild("##Sidebar", ImVec2(kSidebarWidth, sidebarHeight), true);
+    ImGui::PopStyleVar();
+
+    ImGui::TextUnformatted("SentinelGuard v0.1");
     ImGui::Separator();
     ImGui::Spacing();
 
     ImGui::TextUnformatted("Active Monitors:");
-    ImGui::Bullet(); ImGui::TextUnformatted("Process Monitor \xe2\x9c\x93");
-    ImGui::Bullet(); ImGui::TextUnformatted("Clipboard Monitor \xe2\x9c\x93 (Live)");
-    ImGui::Bullet(); ImGui::TextUnformatted("Device Monitor \xe2\x9c\x93 (Live)");
+
+    // ASCII-only status tags: the default ImGui font has no icon glyphs.
+    const auto monitorRow = [](const char* label, bool live)
+    {
+        ImGui::Bullet();
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(175.0f);
+        if (live) {
+            ImGui::TextColored(ImVec4(0.30f, 0.90f, 0.45f, 1.0f), "[LIVE]");
+        } else {
+            ImGui::TextDisabled("[OFF]");
+        }
+    };
+
+    monitorRow("Process Control",  true);
+    monitorRow("Clipboard Monitor", monitorStates_.clipboard);
+    monitorRow("Device Monitor",    monitorStates_.device);
+    monitorRow("Network Monitor",   monitorStates_.network);
 
     ImGui::Spacing();
     ImGui::Checkbox("Show Mock Events", &mockMode_);
@@ -230,6 +280,7 @@ void Dashboard::renderAllowlistSection()
     ImGui::Checkbox("Process", &newAllowProcess_);
     ImGui::SameLine();
     ImGui::Checkbox("Clip", &newAllowClipboard_);
+    ImGui::Checkbox("Network", &newAllowNetwork_);
 
     if (ImGui::Button("Add to Allowlist") && addAllowlistCb_) {
         if (newAllowName_[0] != '\0') {
@@ -240,7 +291,7 @@ void Dashboard::renderAllowlistSection()
             entry.allowDevice    = newAllowDevice_;
             entry.allowProcess   = newAllowProcess_;
             entry.allowClipboard = newAllowClipboard_;
-            entry.allowNetwork   = false;
+            entry.allowNetwork   = newAllowNetwork_;
             addAllowlistCb_(entry);
             newAllowName_[0] = '\0';
             newAllowNote_[0] = '\0';
@@ -343,10 +394,18 @@ void Dashboard::renderEventTable(const std::vector<sentinel::core::AlertEvent>& 
 }
 
 // ─── renderStatusBar ──────────────────────────────────────────────────────────
-void Dashboard::renderStatusBar()
+void Dashboard::renderStatusBar(std::size_t eventCount)
 {
+    // Own padded child so the line is never clipped by the window edge.
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
+    ImGui::BeginChild("##StatusBar", ImVec2(0.0f, kStatusBarHeight), false,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::Separator();
-    ImGui::TextUnformatted("Real-time monitoring active");
+    const std::string status = "Real-time monitoring active  |  " +
+                               std::to_string(eventCount) + " stored events";
+    ImGui::TextUnformatted(status.c_str());
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
 }
 
 // ─── static helpers ───────────────────────────────────────────────────────────

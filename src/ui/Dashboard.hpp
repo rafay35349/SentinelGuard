@@ -7,6 +7,7 @@
 #include <string_view>
 #include <functional>
 #include <optional>
+#include <cstddef>
 #include <cstdint>
 
 namespace sentinel::ui {
@@ -37,6 +38,13 @@ struct AllowlistUiEntry {
     std::string note;
 };
 
+// Runtime state of the background monitors, polled once per frame by main().
+struct MonitorStates {
+    bool clipboard{ false };
+    bool device{ false };
+    bool network{ false };
+};
+
 using InspectCallback         = std::function<ProcessLookupResult(uint32_t pid)>;
 using KillCallback            = std::function<ProcessKillUiResult(uint32_t pid)>;
 using GetAllowlistCallback    = std::function<std::vector<AllowlistUiEntry>()>;
@@ -59,6 +67,9 @@ public:
                                AddAllowlistCallback addCb,
                                RemoveAllowlistCallback remCb);
 
+    // Live monitor state for the sidebar status rows
+    void setMonitorStates(MonitorStates states) noexcept;
+
     // Called each frame — renders the full ImGui UI
     void render();
 
@@ -73,6 +84,7 @@ private:
     AddAllowlistCallback    addAllowlistCb_;
     RemoveAllowlistCallback removeAllowlistCb_;
     bool                    mockMode_{ true };
+    MonitorStates           monitorStates_{};
 
     // Process UI State
     int targetPid_{ 0 };
@@ -93,7 +105,7 @@ private:
     void renderProcessSection();
     void renderAllowlistSection();
     void renderEventTable(const std::vector<sentinel::core::AlertEvent>& events);
-    void renderStatusBar();
+    void renderStatusBar(std::size_t eventCount);
 
     static const char* categoryLabel(sentinel::core::AlertCategory cat);
     static const char* severityLabel(sentinel::core::Severity sev);

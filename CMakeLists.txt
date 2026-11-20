@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(SentinelGuard VERSION 0.1.0 LANGUAGES CXX)
+project(SentinelGuard VERSION 0.1.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,13 +50,16 @@ add_executable(SentinelGuard
     src/monitors/PayloadClassifier.cpp
     src/monitors/ClipboardMonitor.cpp
     src/monitors/DeviceMonitor.cpp
+    src/monitors/NetworkMonitor.cpp
     src/process/ProcessInspector.cpp
     src/process/ProcessKiller.cpp
     src/ui/Dashboard.cpp
+    resources/SentinelGuard.rc
 )
 
 target_include_directories(SentinelGuard PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/resources
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
 )
@@ -66,7 +69,8 @@ target_link_libraries(SentinelGuard PRIVATE
     d3d11
     dxgi
     d3dcompiler
-    dwmapi
+    iphlpapi
+    ws2_32
 )
 
 # ---------------------------------------------------------------------------

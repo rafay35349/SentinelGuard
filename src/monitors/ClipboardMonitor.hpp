@@ -39,7 +39,9 @@ private:
     sentinel::core::EventBus& eventBus_;
     std::atomic<bool>         isRunning_{ false };
     std::jthread              workerThread_;
-    void*                     hwnd_{ nullptr }; // HWND stored without leaking to all headers
+    // HWND stored as void* so <windows.h> stays out of this header. Atomic
+    // because stop() reads it while the worker thread publishes/clears it.
+    std::atomic<void*>        hwnd_{ nullptr };
 };
 
 } // namespace sentinel::monitors

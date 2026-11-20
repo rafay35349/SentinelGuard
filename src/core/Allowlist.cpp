@@ -2,6 +2,7 @@
 // Thread-safe process and category allowlist with human-readable persistence.
 
 #include "Allowlist.hpp"
+#include "Win32Utils.hpp"
 
 #include <algorithm>
 #include <cwctype>
@@ -11,51 +12,6 @@
 namespace sentinel::core {
 
 namespace {
-
-[[nodiscard]] std::string wideToUtf8(std::wstring_view wstr)
-{
-    std::string out;
-    out.reserve(wstr.size());
-    for (const wchar_t wc : wstr) {
-        if (wc < 0x80) {
-            out.push_back(static_cast<char>(wc));
-        } else if (wc < 0x800) {
-            out.push_back(static_cast<char>(0xC0 | ((wc >> 6) & 0x1F)));
-            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
-        } else {
-            out.push_back(static_cast<char>(0xE0 | ((wc >> 12) & 0x0F)));
-            out.push_back(static_cast<char>(0x80 | ((wc >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (wc & 0x3F)));
-        }
-    }
-    return out;
-}
-
-[[nodiscard]] std::wstring utf8ToWide(std::string_view str)
-{
-    std::wstring out;
-    out.reserve(str.size());
-    for (std::size_t i = 0; i < str.size();) {
-        const auto c = static_cast<unsigned char>(str[i]);
-        if (c < 0x80) {
-            out.push_back(static_cast<wchar_t>(c));
-            ++i;
-        } else if ((c & 0xE0) == 0xC0 && i + 1 < str.size()) {
-            const auto c2 = static_cast<unsigned char>(str[i + 1]);
-            out.push_back(static_cast<wchar_t>(((c & 0x1F) << 6) | (c2 & 0x3F)));
-            i += 2;
-        } else if ((c & 0xF0) == 0xE0 && i + 2 < str.size()) {
-            const auto c2 = static_cast<unsigned char>(str[i + 1]);
-            const auto c3 = static_cast<unsigned char>(str[i + 2]);
-            out.push_back(static_cast<wchar_t>(((c & 0x0F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F)));
-            i += 3;
-        } else {
-            out.push_back(static_cast<wchar_t>(c));
-            ++i;
-        }
-    }
-    return out;
-}
 
 [[nodiscard]] std::wstring extractBaseName(std::wstring_view path)
 {
@@ -75,7 +31,9 @@ Allowlist::Allowlist() = default;
 Allowlist::Allowlist(std::string persistencePath)
     : persistencePath_(std::move(persistencePath))
 {
-    loadFromFile(persistencePath_);
+    if (!persistencePath_.empty()) {
+        loadFromFile(persistencePath_);
+    }
 }
 
 std::wstring Allowlist::toLower(std::wstring_view str)
@@ -134,7 +92,7 @@ void Allowlist::addOrUpdate(AllowlistEntry entry)
     }
 
     if (!persistencePath_.empty()) {
-        saveToFile(persistencePath_);
+        saveToFileLocked(persistencePath_);
     }
 }
 
@@ -152,7 +110,7 @@ bool Allowlist::remove(std::wstring_view processName)
 
     const bool removed = (entries_.size() < origSize);
     if (removed && !persistencePath_.empty()) {
-        saveToFile(persistencePath_);
+        saveToFileLocked(persistencePath_);
     }
     return removed;
 }
@@ -164,6 +122,15 @@ std::vector<AllowlistEntry> Allowlist::getEntries() const
 }
 
 bool Allowlist::saveToFile(std::string_view filePath) const
+{
+    // Snapshot under a shared lock so a concurrent writer cannot mutate
+    // entries_ mid-write. saveToFileLocked() is used by mutating paths, which
+    // already hold the exclusive lock (std::shared_mutex is not recursive).
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    return saveToFileLocked(filePath);
+}
+
+bool Allowlist::saveToFileLocked(std::string_view filePath) const
 {
     const std::string path(filePath);
     std::ofstream out(path, std::ios::trunc);
@@ -184,7 +151,7 @@ bool Allowlist::saveToFile(std::string_view filePath) const
             << wideToUtf8(e.note) << "\n";
     }
 
-    return true;
+    return out.good();
 }
 
 bool Allowlist::loadFromFile(std::string_view filePath)
@@ -225,6 +192,7 @@ bool Allowlist::loadFromFile(std::string_view filePath)
         }
     }
 
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     entries_ = std::move(loaded);
     return true;
 }

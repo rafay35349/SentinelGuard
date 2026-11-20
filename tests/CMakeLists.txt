@@ -54,3 +54,28 @@ if(MSVC)
         UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
     )
 endif()
+
+add_executable(VerifyMilestone5
+    VerifyMilestone5.cpp
+    ../src/core/EventBus.cpp
+    ../src/monitors/NetworkMonitor.cpp
+    ../src/process/ProcessInspector.cpp
+)
+
+target_include_directories(VerifyMilestone5 PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(VerifyMilestone5 PRIVATE
+    iphlpapi
+    ws2_32
+)
+
+if(MSVC)
+    target_compile_options(VerifyMilestone5 PRIVATE
+        /W4 /WX /permissive- /utf-8 /Zc:__cplusplus
+    )
+    target_compile_definitions(VerifyMilestone5 PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+endif()

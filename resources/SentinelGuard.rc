@@ -1,0 +1,6 @@
+// SentinelGuard – resources/SentinelGuard.rc
+// Win32 resource script: application icon.
+
+#include "resource.h"
+
+IDI_ICON1 ICON "..\\assets\\sentinelguard.ico"

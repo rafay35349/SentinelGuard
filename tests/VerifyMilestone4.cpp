@@ -89,7 +89,32 @@ int main()
     reportTest(allowlist.isAllowed(L"obs64.exe", sentinel::core::AlertCategory::Clipboard),
                "obs64.exe allowAll: allowed for Clipboard");
 
-    // 1.5: Remove entry
+    // 1.5: Forward-slash path normalizes to the same base name
+    {
+        sentinel::core::Allowlist pathList;
+        sentinel::core::AllowlistEntry slackEntry{};
+        slackEntry.processName = L"slack.exe";
+        slackEntry.allowDevice = true;
+        pathList.addOrUpdate(slackEntry);
+
+        reportTest(pathList.isAllowed(L"C:/Program Files/Slack/slack.exe",
+                                      sentinel::core::AlertCategory::Device),
+                   "Forward-slash full path extracts base name");
+
+        // Case-insensitive addOrUpdate must replace, not append a duplicate.
+        slackEntry.processName = L"SLACK.EXE";
+        slackEntry.allowDevice = false;
+        slackEntry.allowClipboard = true;
+        pathList.addOrUpdate(slackEntry);
+
+        reportTest(pathList.getEntries().size() == static_cast<std::size_t>(1),
+                   "Case-insensitive addOrUpdate replaces existing entry",
+                   std::to_string(pathList.getEntries().size()) + " entries");
+        reportTest(!pathList.isAllowed(L"slack.exe", sentinel::core::AlertCategory::Device),
+                   "Replacement entry carries the updated Device flag");
+    }
+
+    // 1.6: Remove entry
     const bool removed = allowlist.remove(L"zoom.exe");
     reportTest(removed, "allowlist.remove(zoom.exe) succeeded");
     reportTest(!allowlist.isAllowed(L"zoom.exe", sentinel::core::AlertCategory::Device),

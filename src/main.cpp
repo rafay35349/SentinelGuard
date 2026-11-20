@@ -21,9 +21,12 @@
 #include "core/Allowlist.hpp"
 #include "monitors/ClipboardMonitor.hpp"
 #include "monitors/DeviceMonitor.hpp"
+#include "monitors/NetworkMonitor.hpp"
 #include "process/ProcessInspector.hpp"
 #include "process/ProcessKiller.hpp"
 #include "ui/Dashboard.hpp"
+
+#include "resource.h"
 
 // Forward declaration required by ImGui Win32 backend implementation
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -173,6 +176,13 @@ int WINAPI WinMain(
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInstance;
     wc.hCursor       = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+    wc.hIcon         = static_cast<HICON>(::LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON, 0, 0,
+        LR_DEFAULTSIZE | LR_SHARED));
+    wc.hIconSm       = static_cast<HICON>(::LoadImageW(
+        hInstance, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON,
+        ::GetSystemMetrics(SM_CXSMICON), ::GetSystemMetrics(SM_CYSMICON),
+        LR_SHARED));
     wc.lpszClassName = L"SentinelGuardWnd";
     RegisterClassExW(&wc);
 
@@ -252,6 +262,9 @@ int WINAPI WinMain(
 
     sentinel::monitors::DeviceMonitor deviceMonitor(bus);
     deviceMonitor.start();
+
+    sentinel::monitors::NetworkMonitor networkMonitor(bus);
+    networkMonitor.start();
 
     // ── Dashboard ─────────────────────────────────────────────────────────────
     sentinel::ui::Dashboard dashboard(
@@ -371,6 +384,12 @@ int WINAPI WinMain(
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
 
+        dashboard.setMonitorStates({
+            clipboardMonitor.isRunning(),
+            deviceMonitor.isRunning(),
+            networkMonitor.isRunning()
+        });
+
         dashboard.render();
 
         ImGui::Render();
@@ -385,6 +404,7 @@ int WINAPI WinMain(
     }
 
     // ── Shutdown ──────────────────────────────────────────────────────────────
+    networkMonitor.stop();
     deviceMonitor.stop();
     clipboardMonitor.stop();
     bus.stop();

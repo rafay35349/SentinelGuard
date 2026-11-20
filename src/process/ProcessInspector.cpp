@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <string_view>
+#include <vector>
 
 #include "../core/Win32Handle.hpp"
 #include "../core/Win32Utils.hpp"
@@ -21,7 +22,7 @@ namespace {
 
 constexpr uint32_t    kIdlePid    = 0;
 constexpr uint32_t    kSystemPid  = 4;
-constexpr std::size_t kPathBufLen = MAX_PATH * 2; // 520 wchar_t
+constexpr std::size_t kPathBufLen = 32768; // max NT path (long-path aware)
 
 constexpr std::array<std::wstring_view, 7> kProtectedNames{{
     L"csrss.exe",   L"lsass.exe",  L"wininit.exe",
@@ -72,10 +73,10 @@ sentinel::core::Result<ProcessInfo> inspectPid(uint32_t pid)
             ": " + sentinel::core::formatWin32Error(err));
     }
 
-    wchar_t pathBuf[kPathBufLen]{};
-    DWORD   pathLen = static_cast<DWORD>(kPathBufLen);
+    std::vector<wchar_t> pathBuf(kPathBufLen, L'\0');
+    DWORD pathLen = static_cast<DWORD>(pathBuf.size());
 
-    if (!::QueryFullProcessImageNameW(proc.get(), 0, pathBuf, &pathLen)) {
+    if (!::QueryFullProcessImageNameW(proc.get(), 0, pathBuf.data(), &pathLen)) {
         const DWORD err = ::GetLastError();
         return sentinel::core::Result<ProcessInfo>::err(
             "QueryFullProcessImageNameW failed for PID " + std::to_string(pid) +
@@ -84,7 +85,7 @@ sentinel::core::Result<ProcessInfo> inspectPid(uint32_t pid)
 
     ProcessInfo info{};
     info.pid         = pid;
-    info.fullPath    = std::wstring(pathBuf, pathLen);
+    info.fullPath    = std::wstring(pathBuf.data(), pathLen);
     info.name        = extractBaseName(info.fullPath);
     info.isProtected = isProtectedProcessName(info.name);
     return sentinel::core::Result<ProcessInfo>::ok(std::move(info));

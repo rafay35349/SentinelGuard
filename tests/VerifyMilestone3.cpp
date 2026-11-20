@@ -122,7 +122,44 @@ int main()
                    "Hex secret masked properly", res.maskedPreview);
     }
 
-    // 2.7: Non-sensitive prose / code (Negative test)
+    // 2.7: Generic high-entropy token length boundaries (24..256)
+    {
+        const std::string atMin = "aB3dE6gH9jK2mN5pQ8sT1vWx"; // 24 chars
+        const auto resMin = sentinel::monitors::classifyPayload(atMin);
+        reportTest(resMin.isSensitive &&
+                   resMin.type == sentinel::monitors::SecretType::HighEntropyToken,
+                   "24-char high-entropy token is flagged (lower bound)",
+                   std::to_string(atMin.size()) + " chars");
+
+        const std::string belowMin = atMin.substr(0, 23);
+        const auto resBelow = sentinel::monitors::classifyPayload(belowMin);
+        reportTest(!resBelow.isSensitive, "23-char token is below the entropy window");
+
+        std::string aboveMax;
+        while (aboveMax.size() < 257) aboveMax += "aB3dE6gH9jK2mN5pQ8sT1vWx";
+        aboveMax.resize(257);
+        const auto resAbove = sentinel::monitors::classifyPayload(aboveMax);
+        reportTest(!resAbove.isSensitive, "257-char token is above the entropy window");
+    }
+
+    // 2.8: Masking on short inputs never leaks the payload
+    {
+        reportTest(sentinel::monitors::maskSensitive("ab") == "**",
+                   "maskSensitive(2 chars) fully redacts");
+        reportTest(sentinel::monitors::maskSensitive("abc") == "a***c",
+                   "maskSensitive(3 chars) keeps only outer chars");
+        reportTest(sentinel::monitors::maskSensitive("").empty(),
+                   "maskSensitive(empty) returns empty");
+    }
+
+    // 2.9: Truncated JWT is not flagged
+    {
+        const std::string shortJwt = "eyJhbGciOiJIUzI1NiJ9.short";
+        const auto res = sentinel::monitors::classifyPayload(shortJwt);
+        reportTest(!res.isSensitive, "JWT shorter than 30 chars is not flagged");
+    }
+
+    // 2.10: Non-sensitive prose / code (Negative test)
     {
         const std::string sample = "Hello World! This is standard normal clipboard text for copy pasting.";
         const auto res = sentinel::monitors::classifyPayload(sample);

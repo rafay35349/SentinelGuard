@@ -6,9 +6,8 @@
 #include "PayloadClassifier.hpp"
 
 #include <windows.h>
+#include <algorithm>
 #include <string>
-#include <string_view>
-#include <vector>
 
 #include "../core/Win32Utils.hpp"
 
@@ -16,28 +15,10 @@ namespace sentinel::monitors {
 
 namespace {
 
-constexpr wchar_t kWindowClassName[] = L"SentinelGuardClipboardListenerWnd";
-constexpr int     kMaxOpenRetries    = 3;
-constexpr DWORD   kRetryWaitMs       = 10;
-
-// RAII Scope guard for OpenClipboard / CloseClipboard
-class ScopedClipboard {
-public:
-    explicit ScopedClipboard(HWND hwnd) noexcept
-        : isOpen_(::OpenClipboard(hwnd) != FALSE) {}
-
-    ~ScopedClipboard() noexcept
-    {
-        if (isOpen_) {
-            ::CloseClipboard();
-        }
-    }
-
-    [[nodiscard]] bool isOpen() const noexcept { return isOpen_; }
-
-private:
-    bool isOpen_{ false };
-};
+constexpr wchar_t     kWindowClassName[]     = L"SentinelGuardClipboardListenerWnd";
+constexpr int         kMaxOpenRetries        = 3;
+constexpr DWORD       kRetryWaitMs           = 10;
+constexpr std::size_t kMaxClassifiedChars    = 1'000'000; // 1M UTF-16 units
 
 // RAII Scope guard for GlobalLock / GlobalUnlock
 class ScopedGlobalLock {
@@ -53,6 +34,12 @@ public:
     }
 
     [[nodiscard]] const void* get() const noexcept { return ptr_; }
+
+    // Allocation size in bytes; bounds the read of externally owned data.
+    [[nodiscard]] std::size_t byteSize() const noexcept
+    {
+        return (ptr_ != nullptr) ? ::GlobalSize(hMem_) : 0;
+    }
 
 private:
     HGLOBAL hMem_{ nullptr };
@@ -97,8 +84,8 @@ void ClipboardMonitor::stop()
 {
     if (workerThread_.joinable()) {
         workerThread_.request_stop();
-        if (hwnd_) {
-            ::PostMessageW(static_cast<HWND>(hwnd_), WM_CLOSE, 0, 0);
+        if (void* const hwnd = hwnd_.load(); hwnd != nullptr) {
+            ::PostMessageW(static_cast<HWND>(hwnd), WM_CLOSE, 0, 0);
         }
         workerThread_.join();
     }
@@ -121,17 +108,17 @@ void ClipboardMonitor::threadWorker(std::stop_token stopToken)
         0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hInst, nullptr);
 
     if (!hwnd) {
-        ::UnregisterClassW(kWindowClassName, hInst);
+        ::UnregisterClass(kWindowClassName, hInst);
         return;
     }
 
     if (!::AddClipboardFormatListener(hwnd)) {
         ::DestroyWindow(hwnd);
-        ::UnregisterClassW(kWindowClassName, hInst);
+        ::UnregisterClass(kWindowClassName, hInst);
         return;
     }
 
-    hwnd_ = hwnd;
+    hwnd_.store(hwnd);
     isRunning_.store(true);
 
     MSG msg{};
@@ -149,36 +136,63 @@ void ClipboardMonitor::threadWorker(std::stop_token stopToken)
                     if (hData) {
                         ScopedGlobalLock memLock(hData);
                         const auto* wText = static_cast<const wchar_t*>(memLock.get());
-                        if (wText && *wText != L'\0') {
-                            std::wstring wideBuf(wText);
-                            const std::size_t charCount = wideBuf.size();
-                            std::string  utf8Buf = sentinel::core::wideToUtf8(wideBuf);
+                        const std::size_t maxChars = memLock.byteSize() / sizeof(wchar_t);
 
-                            const ClassificationResult res = classifyPayload(utf8Buf);
+                        // CF_UNICODETEXT must be NUL-terminated, but the text is
+                        // owned by another process: never read past the allocation.
+                        if (wText != nullptr && maxChars > 0) {
+                            const wchar_t* const terminator =
+                                std::find(wText, wText + maxChars, L'\0');
+                            const std::size_t charCount =
+                                static_cast<std::size_t>(terminator - wText);
 
-                            // Wipe sensitive buffers immediately with SecureZeroMemory
-                            ::SecureZeroMemory(wideBuf.data(), wideBuf.size() * sizeof(wchar_t));
-                            ::SecureZeroMemory(utf8Buf.data(), utf8Buf.size() * sizeof(char));
+                            if (charCount > 0) {
+                                std::wstring wideBuf(wText, charCount);
 
-                            if (res.isSensitive) {
-                                const std::wstring detail =
-                                    sentinel::core::utf8ToWide(res.category + ": " +
-                                                               res.maskedPreview + " (" +
-                                                               res.reason + ")");
-                                eventBus_.publish(sentinel::core::AlertEvent::make(
-                                    sentinel::core::AlertCategory::Clipboard,
-                                    sentinel::core::Severity::Critical,
-                                    L"ClipboardMonitor",
-                                    detail));
-                            } else {
-                                const std::wstring detail =
-                                    L"Clipboard update: non-sensitive text (" +
-                                    std::to_wstring(charCount) + L" chars)";
-                                eventBus_.publish(sentinel::core::AlertEvent::make(
-                                    sentinel::core::AlertCategory::Clipboard,
-                                    sentinel::core::Severity::Info,
-                                    L"ClipboardMonitor",
-                                    detail));
+                                if (charCount > kMaxClassifiedChars) {
+                                    // Do not copy or classify very large payloads;
+                                    // only the size is reported.
+                                    ::SecureZeroMemory(wideBuf.data(),
+                                                       wideBuf.size() * sizeof(wchar_t));
+                                    eventBus_.publish(sentinel::core::AlertEvent::make(
+                                        sentinel::core::AlertCategory::Clipboard,
+                                        sentinel::core::Severity::Info,
+                                        L"ClipboardMonitor",
+                                        L"Clipboard update: large text payload (" +
+                                            std::to_wstring(charCount) +
+                                            L" chars) skipped classification"));
+                                } else {
+                                    std::string utf8Buf = sentinel::core::wideToUtf8(wideBuf);
+
+                                    const ClassificationResult res = classifyPayload(utf8Buf);
+
+                                    // Wipe sensitive buffers immediately
+                                    ::SecureZeroMemory(wideBuf.data(),
+                                                       wideBuf.size() * sizeof(wchar_t));
+                                    ::SecureZeroMemory(utf8Buf.data(),
+                                                       utf8Buf.size() * sizeof(char));
+
+                                    if (res.isSensitive) {
+                                        const std::wstring detail =
+                                            sentinel::core::utf8ToWide(res.category + ": " +
+                                                                       res.maskedPreview + " (" +
+                                                                       res.reason + ")");
+                                        eventBus_.publish(sentinel::core::AlertEvent::make(
+                                            sentinel::core::AlertCategory::Clipboard,
+                                            sentinel::core::Severity::Critical,
+                                            L"ClipboardMonitor",
+                                            detail));
+                                    } else {
+                                        const std::wstring detail =
+                                            L"Clipboard update: non-sensitive text (" +
+                                            std::to_wstring(charCount) + L" chars)";
+                                        eventBus_.publish(sentinel::core::AlertEvent::make(
+                                            sentinel::core::AlertCategory::Clipboard,
+                                            sentinel::core::Severity::Info,
+                                            L"ClipboardMonitor",
+                                            detail));
+                                    }
+                                }
                             }
                         }
                     }
@@ -193,9 +207,9 @@ void ClipboardMonitor::threadWorker(std::stop_token stopToken)
 
     ::RemoveClipboardFormatListener(hwnd);
     ::DestroyWindow(hwnd);
-    ::UnregisterClassW(kWindowClassName, hInst);
+    ::UnregisterClass(kWindowClassName, hInst);
 
-    hwnd_ = nullptr;
+    hwnd_.store(nullptr);
     isRunning_.store(false);
 }
 

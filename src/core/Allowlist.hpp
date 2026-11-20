@@ -63,6 +63,9 @@ public:
 private:
     [[nodiscard]] static std::wstring toLower(std::wstring_view str);
 
+    // Caller must already hold mutex_ exclusively.
+    bool saveToFileLocked(std::string_view filePath) const;
+
     mutable std::shared_mutex   mutex_;
     std::vector<AllowlistEntry> entries_;
     std::string                 persistencePath_;

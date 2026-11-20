@@ -30,3 +30,7 @@ third_party/
 # Misc
 *.log
 Thumbs.db
+
+# Runtime state (Allowlist autosave target, ImGui window layout)
+sentinel_allowlist.txt
+imgui.ini
