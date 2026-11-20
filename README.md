@@ -1,281 +1,260 @@
 # SentinelGuard
 
-SentinelGuard is a native Windows privacy and activity monitor written in C++20. It runs a set of background
-monitors, classifies the events they emit, and streams them into a live Dear ImGui dashboard rendered with
-DirectX 11.
+**A native Windows privacy and activity monitor built with C++20, Win32, Dear ImGui, and DirectX 11.**
 
-It answers the question *"what is my machine doing right now?"* — which process was started, what sensitive
-looking text hit the clipboard, which application started capturing from the webcam or microphone, which TCP
-connection was opened — and lets you suppress noise per process.
+SentinelGuard observes selected runtime activity on a Windows machine and presents events in a live desktop dashboard. It monitors process activity, clipboard content patterns, webcam/microphone usage, and newly observed TCP connections.
 
-> **Scope.** SentinelGuard is **not** an antivirus or a signature-based malware scanner. It does not scan files,
-> inspect on-disk content, hook the kernel, or match hashes against a threat feed. It observes runtime system and
-> privacy activity through public Win32 APIs and reports it. No detection verdict it emits is a security
-> guarantee.
+> **Project scope:** SentinelGuard is a monitoring and visibility project, not an antivirus or a complete endpoint-detection product. It does not scan files on disk, inspect file contents, hook the Windows kernel, or guarantee that an event is malicious. Clipboard classification is heuristic and should not be treated as a security verdict.
 
 ---
 
-## Overview
+## Screenshots
 
-| | |
+### Dashboard with sample events
+
+The screenshot below uses **Show Mock Events** to display example rows for the four event categories. These rows are demonstration data, not real detections.
+
+![SentinelGuard dashboard showing mock events](assets/screenshots/dashboard-live.png)
+
+### Process control and allowlist
+
+The dashboard also provides process inspection controls and per-category allowlist rules. This screenshot shows the interface with no mock events displayed.
+
+![SentinelGuard process control and allowlist interface](assets/screenshots/allowlist-process-control.png)
+
+---
+
+## Features
+
+| Monitor / component | What it does |
 |---|---|
-| Language | C++20 (`/std:c++20`, no compiler extensions) |
-| Build | CMake ≥ 3.20, MSVC (Visual Studio 2022) |
-| UI | Dear ImGui v1.91.6 (fetched via `FetchContent`), Win32 + DirectX 11 |
-| Platform | Windows 10 / 11, x64 |
-| Warning policy | `/W4 /WX /permissive- /utf-8 /Zc:__cplusplus` on every first-party target |
+| **Process control** | Inspects a process by PID, displays its executable name and path, and refuses termination of protected system processes. |
+| **Clipboard monitor** | Classifies clipboard text using heuristic checks such as entropy, JWT-like structure, and card-like digit sequences. |
+| **Device monitor** | Detects webcam and microphone activity using the current user's Windows consent-store information. |
+| **Network monitor** | Polls the Windows TCP table and reports newly observed connections with their owning process where available. |
+| **Trusted allowlist** | Suppresses selected event categories for specified process names. Rules are saved locally. |
+| **Live dashboard** | Displays events by time, category, severity, source, and detail. Supports sorting and column resizing. |
+| **Mock events** | Displays a fixed set of example events so the interface can be demonstrated without waiting for activity. |
 
-Live event categories: **Process**, **Clipboard**, **Device**, **Network**.
+## Technology
 
----
+- **Language:** C++20
+- **Platform:** Windows 10/11, x64
+- **Build system:** CMake 3.20+
+- **Compiler:** MSVC (Visual Studio 2022 / MSVC v143)
+- **UI:** Dear ImGui 1.91.6
+- **Graphics:** Win32 + DirectX 11
+- **Concurrency:** `std::jthread`, mutexes, and a publish/subscribe event bus
 
-## How It Works
-
-### Pipeline
-
-```
-            producers                              consumers
- ┌────────────────────────────┐
- │ ClipboardMonitor           │─┐
- │ DeviceMonitor              │─┼─► EventBus ──► subscriber ──► RingBuffer<AlertEvent, 500> ──► Dashboard
- │ NetworkMonitor             │─┘   (jthread)     (Allowlist     (fixed capacity,            (per-frame
- │ ProcessKiller / Dashboard  │                   filter)        snapshot copy)              snapshot)
- └────────────────────────────┘
-```
-
-- **`EventBus`** — a single-consumer publish/subscribe queue. `publish()` is callable from any thread; a
-  `std::jthread` drains the queue and invokes subscribers. `stop()` requests the stop token and joins, so no
-  callback can run after shutdown begins.
-- **`Allowlist`** — the only filter between the bus and the buffer. An `AlertEvent` is dropped when its
-  `source` (the process name carried by the event) matches a rule that covers that category.
-- **`RingBuffer<AlertEvent, 500>`** — fixed-capacity, overwrite-oldest storage. The dashboard calls `snapshot()`
-  once per frame, which copies the live contents under a lock; the UI never holds a reference into the buffer.
-- **`AlertEvent`** — plain value type: `timestamp`, `category`, `severity`, `source` (wide string),
-  `detail` (wide string). Copied, never shared.
-
-### Milestones
-
-**Milestone 1 — Dashboard shell.** Win32 window with the embedded icon, D3D11 device/swap chain (hardware with
-WARP fallback), Dear ImGui host window with no decoration, and the `Dashboard` class: sidebar, sortable and
-resizable 5-column event table (Time / Category / Severity / Source / Detail), status bar. Severity rows are
-tinted (warning amber, critical red).
-
-**Milestone 2 — Process control.** `ProcessInspector` opens a PID with `PROCESS_QUERY_LIMITED_INFORMATION`,
-reads the image name and full path, and flags protected system processes. `ProcessKiller` calls
-`TerminateProcess` only when the target is not protected, and reports a structured error otherwise. Both return
-`Result<T>` rather than throwing.
-
-**Milestone 3 — Clipboard.** `ClipboardMonitor` registers a clipboard format listener, reads the offered text
-under `OpenClipboard` with a **bounded** copy (`GlobalSize` plus NUL search — no over-read on unterminated
-handles), and immediately wipes its local copy after classification. `PayloadClassifier` scores plain text for
-entropy (Shannon, bits/char), JWT shape, and card-like digit runs to produce `Info` / `Warning` / `Critical`.
-Classification is capped at 1M characters.
-
-**Milestone 4 — Devices and allowlist.** `DeviceMonitor` reads the per-user Windows consent store
-(`HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam` and
-`...\microphone`) once per second and detects which applications are currently capturing from the webcam or
-microphone. It reports start/stop transitions, plus any session already active at launch, attributed to the
-application name holding the device. `Allowlist` stores per-process rules with four independent category flags
-(`allowDevice`, `allowProcess`, `allowClipboard`, `allowNetwork`) plus an `allowAll` shortcut, guarded by a
-`std::shared_mutex` and persisted to `sentinel_allowlist.txt`.
-
-**Milestone 5 — Network.** `NetworkMonitor` polls `GetExtendedTcpTable(AF_INET, TCP_TABLE_OWNER_PID_ALL)`
-every 2000 ms into a growable `std::vector<std::byte>` buffer (16 KiB start, `ERROR_INSUFFICIENT_BUFFER`
-resize-and-retry, 4 attempts max). The first scan is a **silent baseline**, so startup does not flood the table
-with pre-existing sockets. Only newly observed connections in tracked states are reported (CLOSED, LISTEN,
-TIME_WAIT and DELETE_TCB are skipped, as is PID 0), with the owning process resolved to a name so allowlist
-rules can suppress them. A connection that later changes state is emitted at `Info` severity.
-
-### Thread and memory safety
-
-- Every monitor owns its own `std::jthread`; `start()` / `stop()` are idempotent and `stop()` joins.
-- Shutdown order in `main.cpp` is network → device → clipboard → `EventBus`, so no producer outlives its
-  consumer.
-- Handles are RAII (`Win32Handle`), COM objects are `ComPtr`, and nothing is `new`-ed for the UI.
-- Shared state is guarded: `std::shared_mutex` in `Allowlist` (with a locked internal save path, since
-  `std::shared_mutex` is not recursive), `std::mutex` around the ring buffer. The clipboard window handle is a
-  `std::atomic<void*>`.
-- `<windows.h>` is deliberately kept out of `Dashboard.{hpp,cpp}` and `PayloadClassifier` so UI and
-  classification stay testable in isolation.
-- First-party code compiles at `/W4 /WX`, so a new warning is a build failure.
-
-### Repository layout
-
-```
-SentinelGuard/
-├── assets/
-│   ├── sentinelguard.ico        # application icon (16-256 px)
-│   └── screenshots/             # README images
-├── resources/
-│   ├── SentinelGuard.rc         # icon resource script
-│   └── resource.h               # IDI_ICON1
-├── src/
-│   ├── core/
-│   │   ├── AlertEvent.hpp       # event value type + severity/category enums
-│   │   ├── Allowlist.{hpp,cpp}  # per-process suppression rules, autosave
-│   │   ├── EventBus.{hpp,cpp}   # single-consumer jthread queue
-│   │   ├── Result.hpp           # error-or-value return type
-│   │   ├── Win32Handle.hpp      # RAII handle wrapper
-│   │   └── Win32Utils.hpp       # UTF-8 <-> UTF-16 helpers
-│   ├── monitors/
-│   │   ├── ClipboardMonitor.{hpp,cpp}
-│   │   ├── DeviceMonitor.{hpp,cpp}
-│   │   ├── NetworkMonitor.{hpp,cpp}
-│   │   └── PayloadClassifier.{hpp,cpp}
-│   ├── process/
-│   │   ├── ProcessInspector.{hpp,cpp}
-│   │   └── ProcessKiller.{hpp,cpp}
-│   ├── ui/
-│   │   └── Dashboard.{hpp,cpp}
-│   └── main.cpp                 # window, D3D11, ImGui, wiring, shutdown order
-├── tests/
-│   ├── CMakeLists.txt
-│   ├── VerifyMilestone2.cpp     # process inspect/kill
-│   ├── VerifyMilestone3.cpp     # payload classification
-│   ├── VerifyMilestone4.cpp     # allowlist + device + bus
-│   └── VerifyMilestone5.cpp     # TCP table parsing + network monitor
-├── CMakeLists.txt
-└── README.md
-```
-
-`third_party/imgui` is fetched on first configure and is git-ignored.
+Dear ImGui is fetched by CMake during the first configuration, so an internet connection is required for the initial build.
 
 ---
 
-## Building, Testing and Running
+## Getting started — build and run on Windows
 
-### Prerequisites
+There is currently no prebuilt installer or executable download documented here. To run SentinelGuard, build it from the source code using the steps below.
 
-- Windows 10 or 11 (x64)
-- Visual Studio 2022 with the **Desktop development with C++** workload (MSVC v143 + Windows SDK)
-- CMake 3.20 or newer (the copy bundled with Visual Studio is sufficient)
-- Network access on the **first** configure, so `FetchContent` can clone Dear ImGui v1.91.6
+### 1. Install the prerequisites
 
-### Configure and build (Release)
+Install:
 
-Run from the repository root:
+1. **Visual Studio 2022** with the **Desktop development with C++** workload.
+   - Ensure the MSVC v143 compiler and a Windows 10/11 SDK are selected.
+2. **CMake 3.20 or newer.**
+   - The CMake installation bundled with Visual Studio is sufficient.
+3. **Git for Windows**, if you do not already have Git installed.
+
+You can check whether CMake and Git are available from PowerShell:
+
+```powershell
+cmake --version
+git --version
+```
+
+### 2. Clone the repository
+
+Open PowerShell and run:
+
+```powershell
+git clone https://github.com/rafay35349/SentinelGuard.git
+cd SentinelGuard
+```
+
+If you have already downloaded the repository as a ZIP, extract it and open PowerShell in the extracted `SentinelGuard` folder instead.
+
+### 3. Configure the project
+
+Run this command from the folder containing `CMakeLists.txt`:
 
 ```powershell
 cmake -S . -B build
+```
+
+CMake creates the `build` directory and downloads Dear ImGui through `FetchContent` on the first configuration.
+
+### 4. Build SentinelGuard
+
+Build the Release version:
+
+```powershell
 cmake --build build --config Release
 ```
 
-If `cmake` is not on `PATH`, use the Visual Studio copy:
+If the build succeeds, the application will be created at:
 
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -S . -B build
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --config Release
+```text
+build\Release\SentinelGuard.exe
 ```
 
-Artifacts:
+### 5. Run the application
 
-- `build\Release\SentinelGuard.exe`
-- `build\tests\Release\VerifyMilestone2.exe` … `VerifyMilestone5.exe`
-
-A clean build prints no warnings; `/WX` turns any new one into an error.
-
-### Run the test suites
-
-Each suite is a standalone console program that prints `[PASS]`/`[FAIL]` lines and exits `0` only when every
-check passed. Run all four from the repository root:
-
-```powershell
-.\build\tests\Release\VerifyMilestone2.exe; $LASTEXITCODE
-.\build\tests\Release\VerifyMilestone3.exe; $LASTEXITCODE
-.\build\tests\Release\VerifyMilestone4.exe; $LASTEXITCODE
-.\build\tests\Release\VerifyMilestone5.exe; $LASTEXITCODE
-```
-
-All four must report exit code `0`. Or in one pass:
-
-```powershell
-'2','3','4','5' | ForEach-Object { & ".\build\tests\Release\VerifyMilestone$_.exe"; "M$_ exit $LASTEXITCODE" }
-```
-
-| Suite | Covers |
-|---|---|
-| `VerifyMilestone2` | PID inspection, protected-process refusal, kill result reporting |
-| `VerifyMilestone3` | Entropy thresholds and boundaries, JWT shape, card-like digits, masking, 1M-char cap |
-| `VerifyMilestone4` | Allowlist add/update/remove semantics, case-insensitive replace, persistence, device + bus plumbing |
-
-A suite prints one line per check and returns `0` only when every check passed; any failure exits `1`.
-| `VerifyMilestone5` | TCP row parsing, IPv4 formatting, tracked-state filtering, baseline behaviour |
-
-### Launch
-
-Run from the repository root so the allowlist path resolves next to the executable:
+Make sure your PowerShell working directory is still the **repository root** — the folder containing `CMakeLists.txt` — then run:
 
 ```powershell
 .\build\Release\SentinelGuard.exe
 ```
 
-Close the window normally (the title bar **X**). Shutdown stops the network, device and clipboard monitors,
-then the event bus, then ImGui and D3D11 — no threads are left running.
+The SentinelGuard dashboard should open in a desktop window. Close it using the window's **X** button.
 
-### Files generated at runtime
-
-Both are git-ignored; both are safe to delete.
-
-| File | Written by | Purpose |
-|---|---|---|
-| `imgui.ini` | Dear ImGui | Window layout (sidebar width, table column sizes) |
-| `sentinel_allowlist.txt` | `Allowlist` | Your trusted-process rules; created on the first add/remove |
+> **Important:** Run the executable from the repository root as shown above. The allowlist file is stored relative to the working directory, so launching it from a different directory may cause the rules file to be created somewhere else.
 
 ---
 
-## How to Use
+## Using the dashboard
 
-### 1. Read the live event table
+### Event table
 
-The right-hand table is the event feed, newest row at the top. Columns are **Time**, **Category**,
-**Severity**, **Source** and **Detail**. Amber rows are `Warning`, red rows are `Critical`. Headers are
-clickable to sort and the column separators are draggable. The status bar at the bottom shows
-`Real-time monitoring active` and the number of stored events (the buffer holds the most recent 500).
+The main table displays:
 
-The **Source** column names the origin of the event: the owning process for network rows, the application name
-for webcam/microphone rows, and the literal `ClipboardMonitor` for clipboard rows (Windows exposes no copying
-process through the clipboard format listener). Use it to identify *which* process you are about to inspect or
-allowlist; it is a name, not a PID.
+- **Time** — when the event was recorded.
+- **Category** — Process, Clipboard, Device, or Network.
+- **Severity** — Info, Warning, or Critical.
+- **Source** — the process or component associated with the event.
+- **Detail** — a short description of the event.
 
-![Live dashboard](assets/screenshots/dashboard-live.png)
+Warning rows are highlighted in amber and Critical rows in red. The table headers can be clicked to sort, and the column boundaries can be dragged to resize columns. The status bar displays the monitoring status and the number of stored events.
 
-### 2. Inspect or kill a process
+### Process control
 
-In the sidebar under **Process Control**:
+1. Find the process ID (PID) in Task Manager under **Details**, or use PowerShell:
 
-1. Find the PID. Task Manager → **Details** tab → **PID** column, or
-   `Get-Process <name> | Select-Object Id,ProcessName` in PowerShell.
-2. Type the PID into the `PID` field (values below 0 are clamped to 0).
-3. Click **Inspect**. The panel below shows the image **Name**, the full **Path**, and a status line:
-   - green `Status: Terminating Allowed` — an ordinary process,
-   - red `Status: PROTECTED SYSTEM` — a critical system process, termination will be refused.
-   An unknown, exited, or inaccessible PID reports an error message in amber instead.
-4. Click **Kill Process** (red) to terminate a non-protected PID. The outcome is printed below the buttons and
-   a `Process` event is published to the bus, so the attempt appears in the event table either way.
+   ```powershell
+   Get-Process -Name notepad | Select-Object Id, ProcessName
+   ```
 
-### 3. Add allowlist rules
+2. Enter the PID in the **PID** field.
+3. Click **Inspect** to view the executable name, full path, and termination status.
+4. Use **Kill Process** only when you intentionally want to terminate that process.
 
-In the sidebar under **Trusted Allowlist Policy**:
+SentinelGuard checks for protected system processes and refuses to terminate those it identifies as protected. Do not terminate unfamiliar processes just because they appear in the event table.
 
-1. Type the process name exactly as it appears in the **Source** column into the name field (e.g. `zoom.exe`).
-2. Optionally add a short **Note** — it is shown next to the entry and stored in the file.
-3. Tick the categories the rule should silence: **Device**, **Process**, **Clip**, **Network**. Each is
-   independent; tick only the noise you want gone. A rule with no category ticked suppresses nothing.
-4. Click **Add to Allowlist**. The name is matched case-insensitively; adding the same name again updates the
-   existing rule in place rather than duplicating it.
-5. Entries appear in the scrollable list underneath with an `X` button to remove them. Every add and remove
-   writes `sentinel_allowlist.txt` in the working directory, so rules survive a restart.
+### Trusted allowlist policy
 
-To silence clipboard noise, add a rule named `ClipboardMonitor` and tick **Clip** — that is the source string
-clipboard events carry, since the copying process is not retrievable from the clipboard format listener.
+1. Enter the process name as it appears in the event table's **Source** column (for example, `zoom.exe`).
+2. Optionally enter a note.
+3. Select the categories to suppress: **Device**, **Process**, **Clip**, and/or **Network**.
+4. Click **Add to Allowlist**.
 
-![Process control and allowlist](assets/screenshots/allowlist-process-control.png)
+The category checkboxes are independent. Only selected categories are suppressed for that process. Process-name matching is case-insensitive. Adding an existing process name updates its rule, and saved entries can be removed from the list.
 
-Suppressed categories are filtered inside the bus subscriber: matching events never reach the ring buffer, so
-they never occupy one of the 500 slots.
+Clipboard events use `ClipboardMonitor` as their source label, because the clipboard listener does not identify the application that performed the copy. To suppress clipboard events, add `ClipboardMonitor` and select **Clip**.
 
-### 4. Mock mode
+### Mock events
 
-Tick **Show Mock Events** to render five fixed example rows spanning all four categories instead of live data.
-Useful for checking table layout and severity colours without waiting for real activity. Live monitoring
-continues in the background; untick to return to the live feed.
+Enable **Show Mock Events** to display five fixed example rows covering the event categories and severity colours. This is useful for screenshots and demonstrations. Disable it to return the table to the live event feed.
+
+Mock rows are demonstration data. They should not be interpreted as actual system activity.
+
+---
+
+## Running the verification tests
+
+The repository includes standalone verification programs for milestones 2–5. Build the project first using the steps above. Then, from the repository root, run:
+
+```powershell
+.\build\tests\Release\VerifyMilestone2.exe
+.\build\tests\Release\VerifyMilestone3.exe
+.\build\tests\Release\VerifyMilestone4.exe
+.\build\tests\Release\VerifyMilestone5.exe
+```
+
+Each program prints pass/fail results and returns exit code `0` when its checks pass.
+
+| Test program | Main coverage |
+|---|---|
+| `VerifyMilestone2` | Process inspection, protected-process refusal, and termination result handling |
+| `VerifyMilestone3` | Clipboard payload classification, entropy boundaries, JWT-like patterns, card-like digit sequences, and input-size limit |
+| `VerifyMilestone4` | Allowlist operations and persistence, plus device/event-bus plumbing |
+| `VerifyMilestone5` | TCP table parsing, IPv4 formatting, connection-state filtering, and initial baseline behaviour |
+
+---
+
+## Project structure
+
+```text
+SentinelGuard/
+├── assets/
+│   ├── sentinelguard.ico
+│   └── screenshots/
+│       ├── dashboard-live.png
+│       └── allowlist-process-control.png
+├── resources/
+│   ├── SentinelGuard.rc
+│   └── resource.h
+├── src/
+│   ├── core/
+│   ├── monitors/
+│   ├── process/
+│   ├── ui/
+│   └── main.cpp
+├── tests/
+│   ├── CMakeLists.txt
+│   ├── VerifyMilestone2.cpp
+│   ├── VerifyMilestone3.cpp
+│   ├── VerifyMilestone4.cpp
+│   └── VerifyMilestone5.cpp
+├── CMakeLists.txt
+└── README.md
+```
+
+---
+
+## Design notes
+
+- Background monitors publish events through a shared event bus.
+- A subscriber applies allowlist filtering before accepted events are stored.
+- Events are held in a fixed-capacity ring buffer containing up to 500 recent entries.
+- The dashboard reads a snapshot of the buffer for rendering rather than holding references to shared storage.
+- Monitor threads use `std::jthread` and are stopped before the event bus and graphics resources are shut down.
+- Windows handles use RAII wrappers, and shared state is protected with synchronization primitives.
+
+---
+
+## Runtime files
+
+The application may create these files in its working directory:
+
+| File | Purpose |
+|---|---|
+| `sentinel_allowlist.txt` | Stores trusted-process rules and their category settings. |
+| `imgui.ini` | Stores Dear ImGui window layout and table-column settings. |
+
+These are local runtime files and are not required to be committed to the repository.
+
+---
+
+## Limitations
+
+- Device activity detection relies on the current user's Windows webcam/microphone consent-store information. It is not a kernel-level capture detector.
+- Network monitoring currently uses the Windows IPv4 TCP owner-PID table. It does not represent every type of network traffic.
+- Clipboard classification is heuristic. It does not prove that text is malicious or sensitive.
+- Process termination can cause data loss or interrupt applications. Protected-process checks do not make arbitrary process termination risk-free.
+- SentinelGuard is a learning and systems-programming project, not a replacement for Windows Security, antivirus software, EDR, or a firewall.
+
+## License
+
+Add the project's chosen license here if one is included in the repository. If no license file exists, the project is currently not explicitly licensed for reuse.
+
+---
+
+**Repository:** [github.com/rafay35349/SentinelGuard](https://github.com/rafay35349/SentinelGuard)
